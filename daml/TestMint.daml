@@ -1,0 +1,183 @@
+module TestMint where
+import Mint
+import Daml.Script
+
+
+data Parties = Parties with
+    minter  : Party
+    holder1 : Party
+    holder2 : Party
+
+--setup parties for the navigator
+setupParties : Script Parties
+setupParties  = do 
+    minter <- allocateParty "USMint"
+    holder1 <- allocateParty "Alice"
+    holder2 <- allocateParty "Bob"
+
+    minterId <- validateUserId "USMint"
+    holder1Id <- validateUserId "Alice"
+    holder2Id <- validateUserId "Bob"
+
+    createUser (User minterId (Some minter)) [CanActAs minter]
+    createUser (User holder1Id (Some holder1)) [CanActAs holder1]
+    createUser (User holder2Id (Some holder2)) [CanActAs holder2]
+
+    return Parties with ..
+
+setupMint : Party -> Text -> [Text] ->  Script ( ContractId Mint )
+setupMint minter mintName tokens = do
+    submit minter do
+        createCmd Mint with
+            minter = minter
+            name = mintName
+            mintableTokens = tokens
+
+
+-- happy path 1: mint a token
+hp1: Script ()
+hp1  = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submit parties.minter do
+        exerciseCmd mint MintAToken
+            with name="Penny"
+
+    pure ()
+
+-- happy path 2: mint a token and transfer to holder
+hp2: Script ()
+hp2  = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submit parties.minter do
+        exerciseCmd mint MintAToken
+            with name="Penny"
+
+    tp <- submit parties.minter do
+        exerciseCmd token ProposeTransfer with
+            newOwner = parties.holder1            
+
+    ta <- submit parties.holder1 do
+        exerciseCmd tp AcceptTransfer 
+
+    token <- submit parties.minter do
+        exerciseCmd ta ConfirmTransfer with
+            minter = parties.minter
+
+    pure ()
+
+-- happy path 3: mint a token and reject transfer
+hp3: Script ()
+hp3  = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submit parties.minter do
+        exerciseCmd mint MintAToken
+            with name="Penny"
+
+    tp <- submit parties.minter do
+        exerciseCmd token ProposeTransfer with
+            newOwner = parties.holder1            
+
+    submit parties.holder1 do
+        exerciseCmd tp RejectTransfer 
+
+    pure ()
+
+
+-- unhappy path 1: can't mint a token if you're not a minter on the mint
+uhp1: Script ()
+uhp1 = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submitMustFail parties.holder1 do
+        exerciseCmd mint MintAToken
+            with name="Penny"
+
+    pure ()
+-- unhappy path 2: can't mint a token that's not allowed to be minted
+uhp2: Script ()
+uhp2 = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submitMustFail parties.minter do
+        exerciseCmd mint MintAToken
+            with name="Dime"
+
+    pure ()
+    
+-- unhappy path 3: can't transfer a token that's already been transfered
+uhp3: Script ()
+uhp3 = script do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    token <- submit parties.minter do
+        exerciseCmd mint MintAToken
+            with name="Penny"
+
+    tp <- submit parties.minter do
+        exerciseCmd token ProposeTransfer with
+            newOwner = parties.holder1            
+
+    ta <- submit parties.holder1 do
+        exerciseCmd tp AcceptTransfer 
+
+    newTokenCid <- submit parties.minter do
+        exerciseCmd ta ConfirmTransfer with
+            minter = parties.minter
+
+    tp <- submitMustFail parties.minter do
+        exerciseCmd token ProposeTransfer with
+            newOwner = parties.holder1            
+
+    pure ()
+
+
+-- test script with two transfers
+testScript : Script ()
+testScript = script do
+    minter <- allocateParty "US Mint"
+    holder <- allocateParty "Alice"
+    holder2 <- allocateParty "Bob"
+
+    mint <- submit minter do
+        createCmd Mint with
+            minter = minter
+            name = "US Mint"
+            mintableTokens = ["Penny"]
+
+    coin <- submit minter do
+        exerciseCmd mint MintAToken with
+            name="Penny"
+
+    tp <- submit minter do
+        exerciseCmd coin ProposeTransfer with
+            newOwner = holder            
+
+    ta <- submit holder do
+        exerciseCmd tp AcceptTransfer 
+
+    coin1 <- submit minter do
+        exerciseCmd ta ConfirmTransfer with
+            minter = minter
+
+    tp1 <- submit holder do
+        exerciseCmd coin1 ProposeTransfer with
+            newOwner = holder2           
+
+    ta1 <- submit holder2 do
+        exerciseCmd tp1 AcceptTransfer 
+
+    coin2 <- submitMulti [ minter, holder ] [] do
+        exerciseCmd ta1 ConfirmTransfer with
+            minter = minter
+    
+    
+    pure ()

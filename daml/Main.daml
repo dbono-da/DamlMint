@@ -1,0 +1,12 @@
+module Main where
+
+import TestMint
+import Daml.Script
+
+
+setup : Script ()
+setup = do
+    parties <- setupParties
+    mint <- setupMint parties.minter "US Mint" ["Penny"]
+
+    pure()

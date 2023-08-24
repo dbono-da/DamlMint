@@ -1,0 +1,187 @@
+--- minimum requirements (from gh page)
+
+-- 2 Templates  (Mint, Token)
+-- signatory    (minter, owner)
+-- controller   (Token:transfer owner) 
+-- observer     (Token: minter)
+-- key & maintainer (Mint:Minter)
+-- record (custom data type)
+-- deriving (builtin/custom typeclasses)
+
+-- 4 choices (MintAToken, AddMintableToken, TransferOwner, Destroy)
+-- consuming and nonconsuming (NonConsuming: MintAToken, Consuming : AddMintableToken, TransferOwner, Destroy)
+-- conditional 
+-- iterative
+-- ensure/assertMsg -> add mintable token, and 
+-- optional/either
+-- retrival
+
+-- bug/error free
+-- 3 happy path tests
+-- 3 unhapy path tests
+-- modularized test scripts
+-- parties mapped to user/accessible on navigator
+-- test script covers one full workflow
+-- choices can be exercised by authorized parties on navigator
+module Mint where
+
+import DA.Optional
+import DA.List
+
+
+data MintCounterData = MintCounterData with
+  minter: Party
+  name: Text
+  counter: Int
+    deriving (Show, Eq)
+
+template MintCounter with
+    mintCounter : MintCounterData
+  where 
+    signatory mintCounter.minter
+
+    key (mintCounter.minter, mintCounter.name) : (Party, Text)
+    maintainer key._1
+    
+    choice Increment : ContractId MintCounter 
+      controller mintCounter.minter
+      do
+        create this with
+          mintCounter = MintCounterData 
+            with 
+              minter = this.mintCounter.minter
+              counter = this.mintCounter.counter
+              name    = this.mintCounter.name
+
+template Mint with
+    minter : Party
+    name   : Text
+    mintableTokens : [Text]
+  where
+    signatory minter
+
+    key (minter, name) : (Party, Text)
+    maintainer key._1
+
+    -- choice 1
+    nonconsuming choice MintAToken : ContractId Token
+      with 
+        name : Text
+      controller minter
+      do
+        let coinCanBeMinted = elemIndex name mintableTokens -- iterative
+        assertMsg "This coin is not mintable by this mint" (isSome coinCanBeMinted)
+
+        -- create a mint counter if none exist
+        counterId <- lookupByKey @MintCounter (minter, name) 
+
+        currentCounter <- 
+          if (isSome counterId) then
+            do
+              return ( fromSome counterId ) 
+          else
+            do 
+              create MintCounter with 
+                mintCounter = MintCounterData with
+                  minter = minter
+                  name = name
+                  counter = 0
+             
+        -- update the next Id in the counter, and 
+        counter <- fetch currentCounter
+
+        archive currentCounter
+
+        create MintCounter with
+          mintCounter = MintCounterData with
+            name = counter.mintCounter.name
+            minter = counter.mintCounter.minter
+            counter = counter.mintCounter.counter + 1
+
+        create Token with
+          owner = minter
+          mint = (minter, this.name)
+          name = name
+          id = counter.mintCounter.counter
+          
+    
+    -- choice 2
+    choice AddMintableToken: ContractId Mint
+      with 
+        newToken: Text
+      controller minter
+      do
+        let coinCanBeAdded = elemIndex newToken mintableTokens
+        assertMsg "This coin is already mintable by this mint" (isSome coinCanBeAdded)
+
+        create this with 
+          mintableTokens = newToken :: mintableTokens
+
+template TransferProposal with
+    owner: Party
+    newOwner: Party
+    tokenContractId: ContractId Token
+  where
+    signatory owner
+    observer newOwner
+
+    choice AcceptTransfer : ContractId TransferAcceptance
+      controller newOwner
+      do
+        create TransferAcceptance with
+          ..
+
+    -- choice 4
+    choice RejectTransfer: ()
+      controller newOwner
+        do
+          pure ()
+
+template TransferAcceptance with
+    owner : Party
+    newOwner : Party
+    tokenContractId: ContractId Token
+  where
+    signatory newOwner
+    observer owner
+
+
+    choice ConfirmTransfer : ContractId Token
+        with 
+          minter: Party
+      controller owner, minter
+        do
+          token <- fetch tokenContractId
+          -- check if token cid is correct
+
+          assertMsg "provided mint is not the mint" (token.mint._1 == minter)
+
+          archive tokenContractId
+
+          create Token with
+            owner = newOwner
+            mint = token.mint
+            name = token.name
+            id   = token.id
+
+template Token with
+    owner  : Party
+    mint   : (Party, Text)
+    name   : Text
+    id     : Int
+  where
+    signatory owner, mint._1
+
+    key (mint._1, id) : (Party, Int)
+    maintainer key._1
+    
+    -- choice 3
+    nonconsuming choice ProposeTransfer: ContractId TransferProposal
+      with
+        newOwner: Party
+      controller owner
+      do
+        create TransferProposal with
+          owner = owner
+          newOwner = newOwner
+          tokenContractId = self
